@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Solar System – Real-Time 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: monospace; }
+  #wrap { width: 100vw; height: 100vh; position: relative; }
+  canvas { width: 100%; height: 100%; display: block; }
+  #info { position:absolute;top:12px;left:12px;color:#ccc;font-size:11px;line-height:1.9;pointer-events:none; }
+  #clock { position:absolute;top:12px;right:12px;color:#888;font-size:11px;text-align:right;pointer-events:none; }
+  #speed { position:absolute;bottom:36px;right:12px;color:#888;font-size:11px;text-align:right;pointer-events:none; }
+  #hint { position:absolute;bottom:12px;left:12px;color:#555;font-size:11px;pointer-events:none; }
+  #btns { position:absolute;bottom:12px;right:12px;display:flex;gap:6px;align-items:center; }
+  #btns button { background:rgba(255,255,255,0.08);border:0.5px solid #444;color:#aaa;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px; }
+  #btns button:hover { background:rgba(255,255,255,0.18); }
+  #playbtn { font-size:15px !important; padding:2px 12px !important; }
+  #tooltip { position:absolute;display:none;background:rgba(0,0,0,0.85);color:#fff;padding:6px 10px;border-radius:6px;font-size:12px;pointer-events:none;border:0.5px solid #444; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="info"></div>
+  <div id="clock"></div>
+  <div id="speed"></div>
+  <div id="hint">drag · scroll · click planet</div>
+  <div id="btns">
+    <button id="slower">slower</button>
+    <button id="playbtn">▶</button>
+    <button id="faster">faster</button>
+  </div>
+  <div id="tooltip"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const canvas = document.getElementById('c');
+const W = window.innerWidth, H = window.innerHeight;
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setSize(W, H);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, W/H, 0.01, 2000);
+
+const planets = [
+  {name:'Mercury', a:0.387, e:0.2056, i:7.005, node:48.33, peri:29.12,  M0:174.8, P:87.97,   color:0xaaaaaa, r:0.35},
+  {name:'Venus',   a:0.723, e:0.0068, i:3.395, node:76.68, peri:54.88,  M0:50.4,  P:224.70,  color:0xf5c842, r:0.55},
+  {name:'Earth',   a:1.000, e:0.0167, i:0.000, node:0,     peri:102.94, M0:357.5, P:365.25,  color:0x2277ff, r:0.6},
+  {name:'Mars',    a:1.524, e:0.0934, i:1.850, node:49.56, peri:286.50, M0:19.4,  P:686.97,  color:0xdd4422, r:0.45},
+  {name:'Jupiter', a:5.203, e:0.0484, i:1.303, node:100.46,peri:273.87, M0:20.0,  P:4332.59, color:0xd4996c, r:1.4},
+  {name:'Saturn',  a:9.537, e:0.0542, i:2.485, node:113.72,peri:339.39, M0:317.0, P:10759.2, color:0xc8a96e, r:1.2},
+  {name:'Uranus',  a:19.19, e:0.0472, i:0.773, node:74.00, peri:96.54,  M0:142.0, P:30685.4, color:0x88ddee, r:0.9},
+  {name:'Neptune', a:30.07, e:0.0086, i:1.770, node:131.78,peri:273.19, M0:259.9, P:60189.0, color:0x4466ff, r:0.85},
+];
+
+const J2000 = Date.UTC(2000,0,1,12,0,0);
+
+// Start at today 12:00 UTC, paused
+function todayNoon() {
+  const n = new Date();
+  return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), 12, 0, 0);
+}
+
+let simMs = todayNoon();
+let lastWall = Date.now();
+let playing = false;
+let speedMult = 86400 * 30; // 30 days/sec default when playing
+
+const playBtn = document.getElementById('playbtn');
+const speedEl = document.getElementById('speed');
+
+function updateSpeedLabel() {
+  if (!playing) { speedEl.textContent = 'paused'; return; }
+  const s = speedMult;
+  let label;
+  if (s < 3600) label = s.toFixed(0)+'× speed';
+  else if (s < 86400) label = (s/3600).toFixed(1)+' hrs/sec';
+  else if (s < 86400*365) label = (s/86400).toFixed(1)+' days/sec';
+  else label = (s/86400/365.25).toFixed(1)+' yrs/sec';
+  speedEl.textContent = label;
+}
+updateSpeedLabel();
+
+function anchorSim() {
+  if (playing) {
+    const now = Date.now();
+    simMs += (now - lastWall) * speedMult;
+    lastWall = now;
+  }
+}
+
+function setSpeed(s) {
+  anchorSim();
+  speedMult = Math.max(1, s);
+  updateSpeedLabel();
+}
+
+playBtn.addEventListener('click', () => {
+  if (!playing) {
+    lastWall = Date.now();
+    playing = true;
+    playBtn.textContent = '⏸';
+  } else {
+    anchorSim();
+    playing = false;
+    playBtn.textContent = '▶';
+  }
+  updateSpeedLabel();
+});
+
+document.getElementById('slower').addEventListener('click', () => setSpeed(speedMult / 10));
+document.getElementById('faster').addEventListener('click', () => setSpeed(speedMult * 10));
+
+function getSimDate() {
+  if (playing) {
+    return new Date(simMs + (Date.now() - lastWall) * speedMult);
+  }
+  return new Date(simMs);
+}
+
+function daysFromJ2000(date) {
+  return (date.getTime() - J2000) / 86400000;
+}
+
+function auToScene(au) {
+  if (au <= 1.6) return au * 10;
+  return 16 + Math.log(au/1.6) * 22;
+}
+
+function solveKepler(M_deg, e) {
+  let M = M_deg * Math.PI/180, E = M;
+  for (let i=0; i<100; i++) {
+    const dE = (M - E + e*Math.sin(E)) / (1 - e*Math.cos(E));
+    E += dE;
+    if (Math.abs(dE) < 1e-8) break;
+  }
+  return E;
+}
+
+function getPosition(p, days) {
+  const n = 360 / p.P;
+  let M = ((p.M0 + n*days) % 360 + 360) % 360;
+  const E = solveKepler(M, p.e);
+  const nu = 2*Math.atan2(Math.sqrt(1+p.e)*Math.sin(E/2), Math.sqrt(1-p.e)*Math.cos(E/2));
+  const r = p.a*(1 - p.e*Math.cos(E));
+  const i2=p.i*Math.PI/180, Om=p.node*Math.PI/180, w=p.peri*Math.PI/180;
+  const X=r*(Math.cos(Om)*Math.cos(nu+w)-Math.sin(Om)*Math.sin(nu+w)*Math.cos(i2));
+  const Y=r*(Math.sin(Om)*Math.cos(nu+w)+Math.cos(Om)*Math.sin(nu+w)*Math.cos(i2));
+  const Z=r*Math.sin(nu+w)*Math.sin(i2);
+  return {x:X, y:Y, z:Z, r};
+}
+
+function toScene(x,y,z) {
+  const au = Math.sqrt(x*x+y*y+z*z) || 1e-9;
+  const s = auToScene(au) / au;
+  return new THREE.Vector3(x*s, z*s, y*s);
+}
+
+// Scene objects
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(2.2,32,32), new THREE.MeshBasicMaterial({color:0xffdd44})));
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(2.9,32,32), new THREE.MeshBasicMaterial({color:0xffaa00,transparent:true,opacity:0.15})));
+scene.add(new THREE.AmbientLight(0x333333));
+scene.add(new THREE.PointLight(0xffffff,2,2000));
+
+const gm = new THREE.LineBasicMaterial({color:0x1a2a1a,transparent:true,opacity:0.5});
+[1,2,3,5,8,12,20,31].forEach(au => {
+  const pts=[], s=auToScene(au);
+  for (let a=0; a<=360; a+=3) pts.push(new THREE.Vector3(s*Math.cos(a*Math.PI/180),0,s*Math.sin(a*Math.PI/180)));
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gm));
+});
+
+planets.forEach(p => {
+  const pts = [];
+  for (let deg=0; deg<=360; deg+=1) {
+    const th=deg*Math.PI/180;
+    const r2=p.a*(1-p.e*p.e)/(1+p.e*Math.cos(th));
+    const w=p.peri*Math.PI/180, Om=p.node*Math.PI/180, i2=p.i*Math.PI/180, nu=th;
+    const X=r2*(Math.cos(Om)*Math.cos(nu+w)-Math.sin(Om)*Math.sin(nu+w)*Math.cos(i2));
+    const Y=r2*(Math.sin(Om)*Math.cos(nu+w)+Math.cos(Om)*Math.sin(nu+w)*Math.cos(i2));
+    const Z=r2*Math.sin(nu+w)*Math.sin(i2);
+    pts.push(toScene(X,Y,Z));
+  }
+  scene.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({color:0x2a3a2a,transparent:true,opacity:0.6})
+  ));
+});
+
+const meshes = planets.map(p => {
+  const m = new THREE.Mesh(
+    new THREE.SphereGeometry(p.r*0.5,16,16),
+    new THREE.MeshPhongMaterial({color:p.color, shininess:40})
+  );
+  if (p.name==='Saturn') {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.85,1.55,64),
+      new THREE.MeshBasicMaterial({color:0xb89a5e,side:THREE.DoubleSide,transparent:true,opacity:0.65})
+    );
+    ring.rotation.x = Math.PI/2.5;
+    m.add(ring);
+  }
+  scene.add(m);
+  return m;
+});
+
+function makeLabel(text) {
+  const c2=document.createElement('canvas'); c2.width=128; c2.height=32;
+  const ctx=c2.getContext('2d');
+  ctx.font='bold 13px sans-serif'; ctx.fillStyle='rgba(190,190,190,0.9)';
+  ctx.textAlign='center'; ctx.fillText(text,64,22);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c2),transparent:true}));
+  sp.scale.set(8,2,1);
+  return sp;
+}
+meshes.forEach((m,i) => {
+  const lbl = makeLabel(planets[i].name);
+  lbl.position.set(0, planets[i].r*0.5+1.6, 0);
+  m.add(lbl);
+});
+
+// Camera controls
+let isDrag=false, prev={x:0,y:0};
+let sph={theta:0.5, phi:0.85, r:130};
+function updateCam() {
+  camera.position.set(
+    sph.r*Math.sin(sph.phi)*Math.sin(sph.theta),
+    sph.r*Math.cos(sph.phi),
+    sph.r*Math.sin(sph.phi)*Math.cos(sph.theta)
+  );
+  camera.lookAt(0,0,0);
+}
+updateCam();
+canvas.addEventListener('mousedown', e=>{isDrag=true; prev={x:e.clientX,y:e.clientY};});
+window.addEventListener('mouseup', ()=>isDrag=false);
+window.addEventListener('mousemove', e=>{
+  if (!isDrag) return;
+  sph.theta -= (e.clientX-prev.x)*0.008;
+  sph.phi = Math.max(0.05, Math.min(Math.PI-0.05, sph.phi+(e.clientY-prev.y)*0.008));
+  prev = {x:e.clientX, y:e.clientY};
+  updateCam();
+});
+canvas.addEventListener('wheel', e=>{
+  sph.r = Math.max(15, Math.min(500, sph.r+e.deltaY*0.25));
+  updateCam(); e.preventDefault();
+},{passive:false});
+let lt=null;
+canvas.addEventListener('touchstart', e=>{lt={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
+canvas.addEventListener('touchmove', e=>{
+  if (!lt) return;
+  sph.theta -= (e.touches[0].clientX-lt.x)*0.008;
+  sph.phi = Math.max(0.05, Math.min(Math.PI-0.05, sph.phi+(e.touches[0].clientY-lt.y)*0.008));
+  lt = {x:e.touches[0].clientX, y:e.touches[0].clientY};
+  updateCam();
+},{passive:true});
+
+// Tooltip on click
+const ray=new THREE.Raycaster(), mv=new THREE.Vector2();
+const tip=document.getElementById('tooltip');
+canvas.addEventListener('click', e=>{
+  const rect=canvas.getBoundingClientRect();
+  mv.x = ((e.clientX-rect.left)/rect.width)*2-1;
+  mv.y = -((e.clientY-rect.top)/rect.height)*2+1;
+  ray.setFromCamera(mv, camera);
+  const hits = ray.intersectObjects(meshes);
+  if (hits.length) {
+    const p = planets[meshes.indexOf(hits[0].object)];
+    const pos = getPosition(p, daysFromJ2000(getSimDate()));
+    tip.style.display='block';
+    tip.style.left=(e.clientX+12)+'px';
+    tip.style.top=(e.clientY-40)+'px';
+    tip.innerHTML=`<b>${p.name}</b><br>${pos.r.toFixed(4)} AU from sun<br>Period: ${p.P.toFixed(1)} days`;
+    setTimeout(()=>tip.style.display='none', 4000);
+  }
+});
+
+const infoEl = document.getElementById('info');
+const clockEl = document.getElementById('clock');
+let lastInfoUpdate = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const now = Date.now();
+  const simDate = getSimDate();
+  const days = daysFromJ2000(simDate);
+
+  meshes.forEach((m,i) => {
+    const pos = getPosition(planets[i], days);
+    m.position.copy(toScene(pos.x, pos.y, pos.z));
+  });
+
+  if (now - lastInfoUpdate > 200) {
+    lastInfoUpdate = now;
+    const rows = planets.map((p,i) => {
+      const pos = getPosition(p, days);
+      return `${p.name.padEnd(8)} ${pos.r.toFixed(3)} AU`;
+    });
+    infoEl.innerHTML = '<span style="color:#555;font-size:10px">Planet    Dist</span><br>'+rows.join('<br>');
+    clockEl.textContent = simDate.toISOString().replace('T',' ').slice(0,16)+' UTC';
+  }
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
